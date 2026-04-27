@@ -1,0 +1,120 @@
+name: '📦 Download TheFeed Clients'
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (leave empty to use the latest published release, e.g. v0.12.2)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  download-clients:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🔄 Checkout repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: ⚙️ Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2 jq
+
+      - name: 🏷️ Determine release tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          INPUT_TAG="${{ github.event.inputs.tag }}"
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+            echo "Using requested tag: $TAG"
+          else
+            TAG=$(curl -sSL \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              https://api.github.com/repos/sartoopjj/thefeed/releases/latest \
+              | jq -r '.tag_name')
+            echo "Using latest published tag: $TAG"
+          fi
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "❌ Failed to determine release tag"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: 🧹 Remove old client files
+        run: |
+          rm -rf clients
+          mkdir -p clients
+
+      - name: ⬇️ Download client assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          echo "📦 Fetching assets for tag $TAG"
+
+          # Pull the release JSON and select only CLIENT assets:
+          #   - thefeed-client-*       (desktop / mobile native client binaries)
+          #   - thefeed-android-*.apk  (Android APK)
+          # Server binaries and source archives are intentionally excluded.
+          ASSETS=$(curl -sSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/sartoopjj/thefeed/releases/tags/${TAG}" \
+            | jq -r '.assets[]
+                | select(
+                    (.name | startswith("thefeed-client"))
+                    or (.name | startswith("thefeed-android"))
+                  )
+                | .browser_download_url')
+
+          if [ -z "$ASSETS" ]; then
+            echo "❌ No client assets found for tag $TAG"
+            exit 1
+          fi
+
+          echo "Assets to download:"
+          echo "$ASSETS"
+          echo
+
+          while IFS= read -r URL; do
+            [ -z "$URL" ] && continue
+            FILENAME=$(basename "$URL")
+            echo "⬇️  $FILENAME"
+            aria2c \
+              --split=4 \
+              --max-connection-per-server=4 \
+              --min-split-size=1M \
+              --out="$FILENAME" \
+              --dir="clients" \
+              "$URL"
+          done <<< "$ASSETS"
+
+          # Stamp the version we just pulled
+          echo "$TAG" > clients/VERSION
+
+          echo
+          echo "✅ Downloaded files:"
+          ls -lh clients/
+
+      - name: 📝 Commit & push
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A clients/
+          if git diff --cached --quiet; then
+            echo "Nothing to commit (clients already at $TAG)"
+          else
+            git commit -m "chore: update thefeed clients to ${TAG} [skip ci]"
+            git push
+          fi
