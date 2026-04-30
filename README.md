@@ -8,7 +8,7 @@ The current version in this repo is recorded in [`clients/VERSION`](clients/VERS
 
 ---
 
-## 🇮🇷 راهنمای دانلود (فارسی)
+##  راهنمای دانلود (فارسی)
 
 ### ⚡️ روش سریع (لینک مستقیم)
 
